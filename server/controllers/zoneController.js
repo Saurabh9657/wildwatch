@@ -15,17 +15,24 @@ function haversineDistanceKm(lat1, lng1, lat2, lng2) {
 }
 
 function getZoneCenter(zone) {
+  // Existing Point handling
   if (zone.geometry?.type === 'Point' && Array.isArray(zone.geometry.coordinates)) {
-    return { lat: zone.geometry.coordinates[1], lng: zone.geometry.coordinates[0] };
+      return { lat: zone.geometry.coordinates[1], lng: zone.geometry.coordinates[0] };
   }
+  // Existing Polygon handling
   if (zone.geometry?.type === 'Polygon' && Array.isArray(zone.geometry.coordinates?.[0])) {
-    const points = zone.geometry.coordinates[0];
-    const sums = points.reduce((acc, p) => ({ x: acc.x + p[0], y: acc.y + p[1] }), { x: 0, y: 0 });
-    return { lat: sums.y / points.length, lng: sums.x / points.length };
+      const points = zone.geometry.coordinates[0];
+      const sums = points.reduce((acc, p) => ({ x: acc.x + p[0], y: acc.y + p[1] }), { x: 0, y: 0 });
+      return { lat: sums.y / points.length, lng: sums.x / points.length };
   }
+  // Existing legacy polygonCoordinates handling
   if (Array.isArray(zone.polygonCoordinates) && zone.polygonCoordinates.length > 0) {
-    const sums = zone.polygonCoordinates.reduce((acc, p) => ({ lat: acc.lat + p[0], lng: acc.lng + p[1] }), { lat: 0, lng: 0 });
-    return { lat: sums.lat / zone.polygonCoordinates.length, lng: sums.lng / zone.polygonCoordinates.length };
+      const sums = zone.polygonCoordinates.reduce((acc, p) => ({ lat: acc.lat + p[0], lng: acc.lng + p[1] }), { lat: 0, lng: 0 });
+      return { lat: sums.lat / zone.polygonCoordinates.length, lng: sums.lng / zone.polygonCoordinates.length };
+  }
+  // ✅ NEW: Circle handling
+  if (zone.geometry?.type === 'Circle' && zone.geometry.center) {
+      return { lat: zone.geometry.center.lat, lng: zone.geometry.center.lng };
   }
   return null;
 }
@@ -53,15 +60,18 @@ exports.createZone = async (req, res) => {
       riskLevel: riskLevel || 'Medium'
     };
     
-    // Handle circle zones (officer created)
-    if (geometry?.type === 'Circle' && center && radius) {
+    // Handle circle zones: accept center/radius either at top-level OR inside geometry
+    const circleCenter = center || geometry?.center;
+    const circleRadius = radius || geometry?.radius;
+
+    if (geometry?.type === 'Circle' && circleCenter && circleRadius) {
       zoneData.geometry = {
         type: 'Circle',
-        center: { lat: center.lat, lng: center.lng },
-        radius: radius
+        center: { lat: circleCenter.lat, lng: circleCenter.lng },
+        radius: circleRadius
       };
-      zoneData.radius = radius;
-      zoneData.center = center;
+      zoneData.radius = circleRadius;
+      zoneData.center = circleCenter;
     }
     // Handle polygon zones
     else if (geometry?.type === 'Polygon') {
@@ -97,8 +107,13 @@ exports.createZone = async (req, res) => {
  */
 exports.getAllZones = async (req, res) => {
   try {
-    // Return ALL zones with populated createdBy info
-    const zones = await Zone.find()
+    const query = {};
+    if (req.user.role === 'user') {
+      query.createdAt = { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) };
+    }
+
+    console.log('GET /api/zones for', req.user?.role, 'query:', query);
+    const zones = await Zone.find(query)
       .populate('createdBy', 'name email role')
       .sort({ createdAt: -1 });
     
@@ -155,7 +170,13 @@ exports.getNearbyZones = async (req, res) => {
       return res.status(400).json({ error: 'Valid lat and lng are required' });
     }
 
-    const zones = await Zone.find().sort({ createdAt: -1 });
+    const query = {};
+    if (req.user.role === 'user') {
+      query.createdAt = { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) };
+    }
+
+    console.log('GET /api/zones/nearby for', req.user?.role, 'query:', query, 'origin:', originLat, originLng, 'radius:', searchRadius);
+    const zones = await Zone.find(query).sort({ createdAt: -1 });
     const nearbyZones = zones
       .map((zone) => {
         const center = getZoneCenter(zone);

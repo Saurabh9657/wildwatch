@@ -18,7 +18,7 @@ const zoneSchema = new mongoose.Schema({
   },
   zoneType: {
     type: String,
-    enum: ['Normal', 'Sensitive', 'Restricted', 'Danger'],
+    enum: ['Normal', 'Sensitive', 'Restricted', 'Danger', 'Zone', 'Circle', 'Point', 'Line'],
     default: 'Normal'
   },
   animalType: {
@@ -28,7 +28,7 @@ const zoneSchema = new mongoose.Schema({
   },
   riskLevel: {
     type: String,
-    enum: ['Low', 'Medium', 'High'],
+    enum: ['Low', 'Medium', 'High', 'Critical'],
     default: 'Low'
   },
   radius: {
@@ -49,6 +49,9 @@ const zoneSchema = new mongoose.Schema({
   },
   geometry: {
     type: mongoose.Schema.Types.Mixed
+  },
+  center: {
+    type: mongoose.Schema.Types.Mixed // { lat, lng } for circle zones
   },
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,

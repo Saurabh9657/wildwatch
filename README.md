@@ -149,6 +149,18 @@ A full-stack web application for reporting wildlife sightings, tracking animal m
 
 ## Usage Guide
 
+## Demo Data (Maharashtra)
+
+To quickly seed a dataset modeled on Maharashtra wildlife reserves:
+
+```bash
+cd server
+npm run seed:mh
+```
+
+This script creates citizen/officer users, reports, zones, and alerts for demo/testing.
+It does not claim to represent official incident records.
+
 ### For Citizens
 1. Register/Login with role "Citizen"
 2. Click "Report Sighting" to submit a wildlife report

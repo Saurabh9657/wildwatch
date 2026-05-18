@@ -13,8 +13,27 @@ exports.createReport = async (req, res) => {
     console.log('📝 Report submission received');
     console.log('Body:', req.body);
     console.log('File:', req.file);
-    
+
+    // ── Cooldown: reject if the same user submitted within the last 60 s ──
+    const oneMinuteAgo = new Date(Date.now() - 60 * 1000);
+    const recentReport = await Report.findOne({
+      createdBy: req.user._id,
+      createdAt: { $gte: oneMinuteAgo }
+    });
+
+    if (recentReport) {
+      const secondsLeft = Math.ceil(
+        (recentReport.createdAt.getTime() + 60000 - Date.now()) / 1000
+      );
+      return res.status(429).json({
+        error: `Please wait ${secondsLeft} seconds before submitting another report.`,
+        cooldownRemaining: secondsLeft
+      });
+    }
+    // ── End cooldown check ────────────────────────────────────────────────
+
     const { animalType, locationName, coordinates, riskLevel, description, timeOfSighting } = req.body;
+
     
     // Handle image path - check if file was uploaded
     let imagePath = '';
@@ -106,9 +125,10 @@ exports.getAllReports = async (req, res) => {
     const { animalType, riskLevel, status, limit = 500 } = req.query;
     let query = {};
 
-    // For regular users, only show verified reports
+    // For regular users, only show verified reports within the last 7 days
     if (req.user.role === 'user') {
       query.status = 'verified';
+      query.createdAt = { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) };
     }
 
     if (animalType) query.animalType = new RegExp(animalType, 'i');
@@ -136,7 +156,12 @@ exports.getAllReports = async (req, res) => {
  */
 exports.getMyReports = async (req, res) => {
   try {
-    const reports = await Report.find({ createdBy: req.user._id })
+    const query = { createdBy: req.user._id };
+    if (req.user.role === 'user') {
+      query.createdAt = { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) };
+    }
+
+    const reports = await Report.find(query)
       .sort({ timestamp: -1 });
 
     res.json({ reports });
@@ -172,8 +197,8 @@ exports.verifyReport = async (req, res) => {
     const { status, officerRemarks } = req.body;
     const reportId = req.params.id;
 
-    if (!['verified', 'rejected'].includes(status)) {
-      return res.status(400).json({ error: 'Status must be verified or rejected' });
+    if (!['verified', 'rejected', 'pending'].includes(status)) {
+      return res.status(400).json({ error: 'Status must be verified, rejected, or pending' });
     }
 
     const report = await Report.findById(reportId);

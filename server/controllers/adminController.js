@@ -75,3 +75,65 @@ exports.getAllOfficers = async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 };
+
+/**
+ * Delete Officer Account (Admin Only)
+ * DELETE /admin/officers/:id
+ * Permanently removes an officer account
+ */
+exports.deleteOfficer = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Find officer
+    const officer = await User.findOne({ _id: id, role: 'officer' });
+    if (!officer) {
+      return res.status(404).json({ error: 'Officer not found' });
+    }
+
+    // Delete the officer
+    await User.findByIdAndDelete(id);
+
+    // Log deletion
+    await createLog('Officer account deleted', req.user._id, {
+      officerId: id,
+      officerEmail: officer.email
+    });
+
+    res.json({ message: 'Officer account deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};
+
+/**
+ * Toggle Officer Active Status (Admin Only)
+ * PATCH /admin/officers/:id/toggle-status
+ * Enables or disables an officer account
+ */
+exports.toggleOfficerStatus = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const officer = await User.findOne({ _id: id, role: 'officer' });
+    if (!officer) {
+      return res.status(404).json({ error: 'Officer not found' });
+    }
+
+    officer.isActive = !officer.isActive;
+    await officer.save();
+
+    await createLog(
+      officer.isActive ? 'Officer account enabled' : 'Officer account disabled',
+      req.user._id,
+      { officerId: id, officerEmail: officer.email }
+    );
+
+    res.json({
+      message: `Officer account ${officer.isActive ? 'enabled' : 'disabled'} successfully`,
+      isActive: officer.isActive
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+};

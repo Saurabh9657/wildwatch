@@ -113,7 +113,7 @@ async function loadCitizenDashboard() {
         // Fetch ALL data in parallel with caching
         const [reportsRes, zonesRes, myReportsRes] = await Promise.all([
             apiRequest('/reports?status=verified&limit=30', {}, true),
-            apiRequest('/zones', {}, true),
+            apiRequest('/zones', {}, false),
             apiRequest('/reports/my-reports', {}, true)
         ]);
         
@@ -278,7 +278,7 @@ async function refreshCitizenMap() {
 
         const [reportsRes, zonesRes] = await Promise.all([
             apiRequest(url, {}, true),
-            apiRequest('/zones', {}, true)
+            apiRequest('/zones', {}, false)
         ]);
 
         await addMarkersToCitizenMap(reportsRes.reports || [], zonesRes.zones || []);
@@ -429,6 +429,121 @@ async function searchLocationOnMap(query) {
         }
     } catch (error) {
         console.error('Search error:', error);
+    }
+}
+
+/**
+ * Load the citizen's own reports list – Professional UI
+ */
+async function loadMyReports() {
+    const mainContent = document.getElementById('mainContent');
+    mainContent.innerHTML = `
+        <div class="container">
+            <div class="page-header">
+                <div>
+                    <h2 class="page-title">My Reports</h2>
+                    <p class="page-subtitle">Track the status of wildlife sightings you've submitted in the last 7 days.</p>
+                </div>
+                <button class="btn btn-outline" onclick="loadPage('dashboard')">
+                    <i class="fas fa-arrow-left"></i> Back to Dashboard
+                </button>
+            </div>
+
+            <div class="reports-table-wrapper">
+                <div class="table-container">
+                    <div id="myReportsContent" class="table-loading">
+                        <div class="spinner"></div>
+                        <p>Loading your reports…</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+
+    try {
+        const response = await apiRequest('/reports/my-reports', {}, true);
+        const reports = response.reports || [];
+        const container = document.getElementById('myReportsContent');
+
+        if (reports.length === 0) {
+            container.innerHTML = `
+                <div class="empty-reports">
+                    <div class="empty-icon">📋</div>
+                    <h3>No reports yet</h3>
+                    <p>You haven't submitted any wildlife sightings in the past 7 days.</p>
+                    <button class="btn btn-primary" onclick="loadPage('report')">
+                        <i class="fas fa-plus"></i> Report a Sighting
+                    </button>
+                </div>
+            `;
+            return;
+        }
+
+        container.className = 'table-content';
+        container.innerHTML = `
+            <table class="professional-table">
+                <thead>
+                    <tr>
+                        <th>Animal</th>
+                        <th>Location</th>
+                        <th>Risk Level</th>
+                        <th>Status</th>
+                        <th>Date &amp; Time</th>
+                        <th>Coordinates</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${reports.map(report => {
+                        const ts = safeFormatDateTime(report.timestamp || report.createdAt);
+                        const statusCls = report.status === 'verified' ? 'verified'
+                                        : report.status === 'rejected' ? 'rejected' : 'pending';
+                        const risk = (report.riskLevel || '').toLowerCase();
+                        const riskCls = (risk === 'high' || risk === 'critical') ? 'high'
+                                      : risk === 'medium' ? 'medium' : 'low';
+                        const emoji = ({
+                            Tiger:'🐯', Leopard:'🐆', Elephant:'🐘', Bear:'🐻',
+                            Snake:'🐍', Monkey:'🐒', Deer:'🦌', 'Wild Boar':'🐗',
+                            Crocodile:'🐊', Fox:'🦊', Wolf:'🐺'
+                        })[report.animalType] || '🐾';
+                        const lat = report.coordinates?.lat?.toFixed(4) ?? '—';
+                        const lng = report.coordinates?.lng?.toFixed(4) ?? '—';
+                        return `
+                            <tr>
+                                <td>
+                                    <div class="animal-cell">
+                                        <span class="animal-emoji">${emoji}</span>
+                                        <span class="animal-name">${report.animalType || 'Unknown'}</span>
+                                    </div>
+                                </td>
+                                <td class="location-cell">${report.locationName || 'Unknown'}</td>
+                                <td><span class="risk-pill ${riskCls}">${report.riskLevel || 'Unknown'}</span></td>
+                                <td><span class="status-pill ${statusCls}">${report.status}</span></td>
+                                <td class="date-cell">${ts}</td>
+                                <td><code class="coord-code">${lat}, ${lng}</code></td>
+                            </tr>
+                        `;
+                    }).join('')}
+                </tbody>
+            </table>
+            <div class="table-footer-bar">
+                <span class="footer-note"><i class="far fa-clock"></i> Reports older than 7 days are hidden</span>
+                <span class="footer-count">${reports.length} report${reports.length !== 1 ? 's' : ''}</span>
+            </div>
+        `;
+
+    } catch (error) {
+        console.error('Error loading my reports:', error);
+        const container = document.getElementById('myReportsContent');
+        if (container) container.innerHTML = `
+            <div class="error-state">
+                <div class="state-icon">⚠️</div>
+                <h3>Unable to load reports</h3>
+                <p>${error.message}</p>
+                <button class="btn btn-outline" onclick="loadMyReports()">
+                    <i class="fas fa-redo"></i> Try Again
+                </button>
+            </div>
+        `;
     }
 }
 
@@ -781,8 +896,9 @@ function loadReportWizard() {
             
             showMessage('reportMessage', '✅ Report submitted successfully! An officer will review it shortly.', 'success');
             
-            if (window.CacheManager) {
-                window.CacheManager.clear('GET:/reports');
+            if (typeof clearCache === 'function') {
+                clearCache('/reports');
+                clearCache('/reports/my-reports');
             }
             
             setTimeout(() => {
@@ -874,269 +990,287 @@ async function submitFinalReport() {
 
 
 
+// === ALERTS_PAGE_START ===
 async function loadAlertsPage() {
     const mainContent = document.getElementById('mainContent');
-    
-    // State for filters
-    let currentRiskFilter = '';
-    let currentRadius = 10; // Default 10km
+
+    // ── State ─────────────────────────────────────────────────────────────
+    let allAlerts = [];
     let userLocation = null;
-    let isLocating = false;
-    
-    // Function to get user location with timeout
-    const getUserLocation = () => {
-        return new Promise((resolve) => {
-            if (!navigator.geolocation) {
-                resolve(null);
-                return;
-            }
-            isLocating = true;
-            updateLocationStatus('Detecting your location...');
-            
-            navigator.geolocation.getCurrentPosition(
-                (position) => {
-                    isLocating = false;
-                    updateLocationStatus(`📍 Location detected! Showing alerts within ${currentRadius}km`);
-                    resolve({
-                        lat: position.coords.latitude,
-                        lng: position.coords.longitude
-                    });
-                },
-                (error) => {
-                    isLocating = false;
-                    updateLocationStatus('⚠️ Location unavailable. Showing all alerts.');
-                    console.log('Location error:', error);
-                    resolve(null);
-                },
-                { timeout: 5000, enableHighAccuracy: false }
-            );
-        });
-    };
-    
-    // Update location status display
-    const updateLocationStatus = (message) => {
-        const statusEl = document.getElementById('locationStatus');
-        if (statusEl) statusEl.innerHTML = message;
-    };
-    
-    // Calculate distance between two points in km
-    const calculateDistance = (lat1, lng1, lat2, lng2) => {
-        return Math.hypot(lat1 - lat2, lng1 - lng2) * 111;
-    };
-    
-    // Function to render alerts with filters
-    const renderAlerts = async () => {
-        const container = document.getElementById('alertsList');
-        if (!container) return;
-        
-        container.innerHTML = '<div style="text-align: center; padding: 2rem;"><i class="fas fa-spinner fa-spin"></i> Loading alerts...</div>';
-        
-        try {
-            const response = await fetch('/api/alerts', {
-                headers: { 'Authorization': `Bearer ${localStorage.getItem('authToken')}` }
-            });
-            const data = await response.json();
-            let alerts = data.alerts || [];
-            
-            // Apply risk filter
-            if (currentRiskFilter) {
-                alerts = alerts.filter(a => 
-                    a.riskLevel?.toLowerCase() === currentRiskFilter.toLowerCase()
-                );
-            }
-            
-            // Apply distance filter
-            let showDistanceColumn = false;
-            let filteredByDistance = false;
-            
-            if (userLocation && currentRadius !== 'all') {
-                const radiusKm = parseInt(currentRadius);
-                alerts = alerts.filter(alert => {
-                    if (!alert.coordinates) return false;
-                    const distance = calculateDistance(
-                        userLocation.lat, userLocation.lng,
-                        alert.coordinates.lat, alert.coordinates.lng
-                    );
-                    alert.distance = distance;
-                    return distance <= radiusKm;
-                });
-                filteredByDistance = true;
-                showDistanceColumn = true;
-                updateLocationStatus(`📍 Showing ${alerts.length} alerts within ${radiusKm}km of you`);
-            } else if (currentRadius === 'all') {
-                updateLocationStatus(`🌍 Showing all alerts (no distance filter)`);
-            } else if (!userLocation && currentRadius !== 'all') {
-                updateLocationStatus(`⚠️ Location unavailable. Showing all alerts. Click "Detect Location" to enable distance filter.`);
-            }
-            
-            if (alerts.length === 0) {
-                let emptyMessage = 'No alerts found';
-                if (filteredByDistance) {
-                    emptyMessage = `No alerts within ${currentRadius}km of your location`;
-                } else if (currentRiskFilter) {
-                    emptyMessage = `No ${currentRiskFilter} risk alerts found`;
-                }
-                container.innerHTML = `
-                    <div style="text-align: center; padding: 3rem; background: white; border-radius: 12px;">
-                        <i class="fas fa-bell-slash" style="font-size: 3rem; color: #6c757d;"></i>
-                        <h3>${emptyMessage}</h3>
-                        <button class="btn btn-outline btn-sm" onclick="resetFilters()" style="margin-top: 1rem;">
-                            <i class="fas fa-undo"></i> Reset Filters
-                        </button>
-                    </div>
-                `;
-                return;
-            }
-            
-            // Sort by distance if available
-            if (showDistanceColumn && userLocation) {
-                alerts.sort((a, b) => (a.distance || Infinity) - (b.distance || Infinity));
-            }
-            
-            // Render alerts
-            container.innerHTML = alerts.map(alert => {
-                const distanceText = alert.distance ? `${alert.distance.toFixed(1)} km away` : '';
-                const riskColor = alert.riskLevel === 'High' || alert.riskLevel === 'Critical' ? '#e63946' :
-                                 alert.riskLevel === 'Medium' ? '#ffb703' : '#52b788';
-                
-                return `
-                    <div style="background: white; border-radius: 12px; padding: 1rem; margin-bottom: 1rem; border-left: 4px solid ${riskColor}; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
-                        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.5rem;">
-                            <span style="background: ${riskColor}; color: white; padding: 0.25rem 0.75rem; border-radius: 20px; font-size: 0.75rem; font-weight: bold;">
-                                ${alert.riskLevel || 'MEDIUM'} RISK
-                            </span>
-                            <span style="color: #6c757d; font-size: 0.75rem;">
-                                ${new Date(alert.timestamp).toLocaleString()}
-                            </span>
-                        </div>
-                        <div style="font-size: 1rem; margin-bottom: 0.5rem;">
-                            ${alert.message || 'Wildlife Alert'}
-                        </div>
-                        <div style="color: #6c757d; font-size: 0.85rem;">
-                            📍 ${alert.coordinates?.lat?.toFixed(4) || 'Unknown'}, ${alert.coordinates?.lng?.toFixed(4) || 'Unknown'}
-                            ${distanceText ? `<span style="margin-left: 1rem;">📍 ${distanceText}</span>` : ''}
-                        </div>
-                        <div style="margin-top: 0.75rem; display: flex; gap: 0.5rem;">
-                            <button class="btn btn-outline btn-sm" onclick="viewAlertOnMap(${alert.coordinates?.lat || 0}, ${alert.coordinates?.lng || 0})">
-                                <i class="fas fa-map"></i> View on Map
-                            </button>
-                            <button class="btn btn-outline btn-sm" onclick="shareAlert('${alert._id}')">
-                                <i class="fas fa-share-alt"></i> Share
-                            </button>
-                        </div>
-                    </div>
-                `;
-            }).join('');
-            
-        } catch (error) {
-            console.error('Error:', error);
-            container.innerHTML = `
-                <div style="text-align: center; padding: 2rem; color: red; background: white; border-radius: 12px;">
-                    <i class="fas fa-exclamation-circle fa-2x"></i>
-                    <p>Error loading alerts: ${error.message}</p>
-                    <button class="btn btn-primary btn-sm" onclick="renderAlerts()">Try Again</button>
-                </div>
-            `;
-        }
-    };
-    
-    // Get initial location
-    userLocation = await getUserLocation();
-    
-    // Render the page HTML with filters
+    let currentRiskFilter = '';
+    let currentRadius = 10;
+
+    // ── 1. Paint shell + skeleton cards immediately ────────────────────────
     mainContent.innerHTML = `
         <div class="container">
-            <div class="card">
-                <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; margin-bottom: 1.5rem;">
-                    <div>
-                        <h2><i class="fas fa-bell"></i> Wildlife Alerts</h2>
-                        <p style="color: var(--gray);" id="locationStatus">
-                            ${userLocation ? `📍 Showing alerts within ${currentRadius}km of you` : '📍 Detecting location...'}
-                        </p>
-                    </div>
-                    <button class="btn btn-outline btn-sm" onclick="refreshAlerts()">
-                        <i class="fas fa-sync-alt"></i> Refresh
-                    </button>
+            <div class="page-header">
+                <div>
+                    <h2 class="page-title"><i class="fas fa-bell"></i> Wildlife Alerts</h2>
+                    <p class="page-subtitle" id="locationStatus">
+                        <i class="fas fa-spinner fa-spin"></i> Detecting your location…
+                    </p>
                 </div>
-                
-                <div class="filter-bar" style="display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 1.5rem;">
-                    <div class="filter-group">
-                        <label><i class="fas fa-chart-line"></i> Risk Level:</label>
-                        <select id="filterRiskSelect">
-                            <option value="">All Risks</option>
-                            <option value="critical">Critical</option>
-                            <option value="high">High</option>
-                            <option value="medium">Medium</option>
-                            <option value="low">Low</option>
-                        </select>
-                    </div>
-                    
-                    <div class="filter-group">
-                        <label><i class="fas fa-map-marker-alt"></i> Distance:</label>
-                        <select id="filterRadiusSelect">
-                            <option value="all">All Alerts</option>
-                            <option value="1">Within 1 km</option>
-                            <option value="5">Within 5 km</option>
-                            <option value="10" selected>Within 10 km</option>
-                            <option value="20">Within 20 km</option>
-                            <option value="50">Within 50 km</option>
-                        </select>
-                    </div>
-                    
-                    <button class="btn btn-primary btn-sm" onclick="detectLocationAndRefresh()">
-                        <i class="fas fa-location-arrow"></i> Detect My Location
-                    </button>
+                <button class="btn btn-outline" id="refreshAlertsBtn">
+                    <i class="fas fa-sync-alt"></i> Refresh
+                </button>
+            </div>
+
+            <div class="alerts-filter-bar">
+                <div class="filter-group">
+                    <label><i class="fas fa-exclamation-triangle"></i> Risk Level</label>
+                    <select id="filterRiskSelect" class="filter-select">
+                        <option value="">All Risks</option>
+                        <option value="Critical">Critical</option>
+                        <option value="High">High</option>
+                        <option value="Medium">Medium</option>
+                        <option value="Low">Low</option>
+                    </select>
                 </div>
-                
-                <div id="alertsList" class="alerts-container">
-                    <div style="text-align: center; padding: 2rem;"><i class="fas fa-spinner fa-spin"></i> Loading alerts...</div>
+                <div class="filter-group">
+                    <label><i class="fas fa-location-dot"></i> Distance</label>
+                    <select id="filterRadiusSelect" class="filter-select">
+                        <option value="all">All Alerts</option>
+                        <option value="1">Within 1 km</option>
+                        <option value="5">Within 5 km</option>
+                        <option value="10" selected>Within 10 km</option>
+                        <option value="20">Within 20 km</option>
+                        <option value="50">Within 50 km</option>
+                    </select>
                 </div>
+                <button class="btn btn-primary btn-sm" id="detectLocationBtn">
+                    <i class="fas fa-crosshairs"></i> Use My Location
+                </button>
+            </div>
+
+            <div class="alerts-container" id="alertsList">
+                ${Array(3).fill(0).map(() => `
+                    <div class="alert-card-skeleton">
+                        <div class="skeleton-header">
+                            <div class="skeleton-badge"></div>
+                            <div class="skeleton-time"></div>
+                        </div>
+                        <div class="skeleton-line"></div>
+                        <div class="skeleton-line short"></div>
+                        <div class="skeleton-actions">
+                            <div class="skeleton-btn"></div>
+                            <div class="skeleton-btn"></div>
+                        </div>
+                    </div>
+                `).join('')}
             </div>
         </div>
     `;
-    
-    // Attach filter event listeners
-    const riskSelect = document.getElementById('filterRiskSelect');
-    const radiusSelect = document.getElementById('filterRadiusSelect');
-    
-    if (riskSelect) {
-        riskSelect.addEventListener('change', (e) => {
-            currentRiskFilter = e.target.value;
-            renderAlerts();
-        });
-    }
-    
-    if (radiusSelect) {
-        radiusSelect.addEventListener('change', async (e) => {
-            currentRadius = e.target.value;
-            if (currentRadius !== 'all' && !userLocation) {
-                userLocation = await getUserLocation();
+
+    // ── Helpers ───────────────────────────────────────────────────────────
+    const updateLocationStatus = (msg) => {
+        const el = document.getElementById('locationStatus');
+        if (el) el.innerHTML = msg;
+    };
+
+    const distKm = (lat1, lng1, lat2, lng2) =>
+        Math.hypot(lat1 - lat2, lng1 - lng2) * 111;
+
+    // ── 2. Fetch alerts – never blocks on GPS ─────────────────────────────
+    const fetchAlerts = async () => {
+        try {
+            const res = await apiRequest('/alerts', {}, true);
+            allAlerts = res.alerts || [];
+        } catch (e) {
+            console.error('Fetch alerts error:', e);
+            allAlerts = [];
+        }
+    };
+
+    // ── 3. GPS with hard 4 s timeout ─────────────────────────────────────
+    const getLocationAsync = () => new Promise((resolve) => {
+        if (!navigator.geolocation) {
+            updateLocationStatus('📍 Location not supported – showing all alerts');
+            return resolve(null);
+        }
+        let settled = false;
+        const done = (loc) => { if (!settled) { settled = true; resolve(loc); } };
+
+        navigator.geolocation.getCurrentPosition(
+            (pos) => {
+                userLocation = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+                updateLocationStatus('📍 Location acquired');
+                done(userLocation);
+            },
+            () => {
+                updateLocationStatus('⚠️ Location unavailable – showing all alerts');
+                done(null);
+            },
+            { timeout: 4000, enableHighAccuracy: false, maximumAge: 60000 }
+        );
+        setTimeout(() => {
+            if (!settled) {
+                updateLocationStatus('⚠️ Location timed out – showing all alerts');
+                done(null);
             }
-            renderAlerts();
+        }, 4200);
+    });
+
+    // ── 4. Build a single alert card element ─────────────────────────────
+    const createAlertCard = (alert) => {
+        const riskColor = getRiskColor(alert.riskLevel);
+        const distText  = alert.distance != null ? `${alert.distance.toFixed(1)} km away` : '';
+        const lat = alert.coordinates?.lat;
+        const lng = alert.coordinates?.lng;
+
+        const card = document.createElement('div');
+        card.className = 'alert-card';
+        card.style.borderLeftColor = riskColor;
+        card.innerHTML = `
+            <div class="alert-card-header">
+                <span class="alert-card-badge" style="background:${riskColor};">
+                    ${alert.riskLevel || 'MEDIUM'} RISK
+                </span>
+                <span class="alert-card-time">
+                    <i class="far fa-clock"></i> ${safeFormatRelativeTime(alert.timestamp)}
+                </span>
+            </div>
+            <div class="alert-card-message">${alert.message || 'Wildlife Alert'}</div>
+            <div class="alert-card-meta">
+                <span><i class="fas fa-map-pin"></i>
+                    ${lat != null ? lat.toFixed(4) : '—'}, ${lng != null ? lng.toFixed(4) : '—'}
+                </span>
+                ${distText ? `<span><i class="fas fa-route"></i> ${distText}</span>` : ''}
+            </div>
+            <div class="alert-card-actions">
+                <button class="btn-card" data-action="map" data-lat="${lat}" data-lng="${lng}">
+                    <i class="fas fa-map"></i> View on Map
+                </button>
+                <button class="btn-card" data-action="share" data-id="${alert._id}">
+                    <i class="fas fa-share-alt"></i> Share
+                </button>
+            </div>
+        `;
+
+        card.querySelector('[data-action="map"]').addEventListener('click', (e) => {
+            const lt = parseFloat(e.currentTarget.dataset.lat);
+            const lg = parseFloat(e.currentTarget.dataset.lng);
+            if (!isNaN(lt) && !isNaN(lg)) viewAlertOnMap(lt, lg);
         });
-    }
-    
-    // Global functions
-    window.refreshAlerts = () => {
-        renderAlerts();
+
+        card.querySelector('[data-action="share"]').addEventListener('click', (e) => {
+            shareAlert(e.currentTarget.dataset.id);
+        });
+
+        return card;
     };
-    
-    window.detectLocationAndRefresh = async () => {
-        userLocation = await getUserLocation();
-        renderAlerts();
+
+    // ── 5. Batch-render filtered list ─────────────────────────────────────
+    const renderAlerts = (filtered) => {
+        const container = document.getElementById('alertsList');
+        if (!container) return;
+
+        if (filtered.length === 0) {
+            container.innerHTML = `
+                <div class="empty-alerts">
+                    <i class="fas fa-bell-slash"></i>
+                    <h3>No alerts found</h3>
+                    <p>${currentRadius !== 'all' ? 'Try increasing the distance or changing filters.' : 'All clear for now.'}</p>
+                    <button class="btn btn-outline btn-sm" id="resetFiltersBtn">
+                        <i class="fas fa-undo"></i> Reset Filters
+                    </button>
+                </div>
+            `;
+            document.getElementById('resetFiltersBtn')?.addEventListener('click', () => {
+                document.getElementById('filterRiskSelect').value = '';
+                document.getElementById('filterRadiusSelect').value = '10';
+                currentRiskFilter = '';
+                currentRadius = 10;
+                applyFiltersAndRender();
+            });
+            return;
+        }
+
+        container.innerHTML = '';
+        let idx = 0;
+        const BATCH = 6;
+        const renderBatch = () => {
+            const end = Math.min(idx + BATCH, filtered.length);
+            for (let i = idx; i < end; i++) container.appendChild(createAlertCard(filtered[i]));
+            idx = end;
+            if (idx < filtered.length) requestAnimationFrame(renderBatch);
+        };
+        requestAnimationFrame(renderBatch);
     };
-    
-    window.resetFilters = () => {
-        if (riskSelect) riskSelect.value = '';
-        if (radiusSelect) radiusSelect.value = '10';
-        currentRiskFilter = '';
-        currentRadius = '10';
-        renderAlerts();
+
+    // ── 6. Filter + render ────────────────────────────────────────────────
+    const applyFiltersAndRender = () => {
+        let filtered = [...allAlerts];
+
+        if (currentRiskFilter) {
+            filtered = filtered.filter(a =>
+                a.riskLevel?.toLowerCase() === currentRiskFilter.toLowerCase()
+            );
+        }
+
+        if (userLocation && currentRadius !== 'all') {
+            const r = parseInt(currentRadius);
+            filtered = filtered.filter(a => {
+                if (!a.coordinates) return false;
+                const d = distKm(userLocation.lat, userLocation.lng,
+                                  a.coordinates.lat, a.coordinates.lng);
+                a.distance = d;
+                return d <= r;
+            });
+            filtered.sort((a, b) => (a.distance || 0) - (b.distance || 0));
+            updateLocationStatus(
+                `📍 ${filtered.length} alert${filtered.length !== 1 ? 's' : ''} within ${currentRadius} km`
+            );
+        } else if (currentRadius === 'all') {
+            updateLocationStatus(`🌍 Showing all ${filtered.length} alerts`);
+        }
+
+        renderAlerts(filtered);
     };
-    
-    // Initial render
-    await renderAlerts();
+
+    // ── 7. Event listeners ────────────────────────────────────────────────
+    const bindEvents = () => {
+        document.getElementById('filterRiskSelect')?.addEventListener('change', (e) => {
+            currentRiskFilter = e.target.value;
+            applyFiltersAndRender();
+        });
+
+        document.getElementById('filterRadiusSelect')?.addEventListener('change', async (e) => {
+            currentRadius = e.target.value;
+            if (currentRadius !== 'all' && !userLocation) userLocation = await getLocationAsync();
+            applyFiltersAndRender();
+        });
+
+        document.getElementById('detectLocationBtn')?.addEventListener('click', async () => {
+            updateLocationStatus('<i class="fas fa-spinner fa-spin"></i> Detecting…');
+            userLocation = await getLocationAsync();
+            applyFiltersAndRender();
+        });
+
+        document.getElementById('refreshAlertsBtn')?.addEventListener('click', async () => {
+            const c = document.getElementById('alertsList');
+            if (c) c.innerHTML = Array(3).fill(0).map(() => `
+                <div class="alert-card-skeleton">
+                    <div class="skeleton-header">
+                        <div class="skeleton-badge"></div><div class="skeleton-time"></div>
+                    </div>
+                    <div class="skeleton-line"></div>
+                    <div class="skeleton-line short"></div>
+                    <div class="skeleton-actions">
+                        <div class="skeleton-btn"></div><div class="skeleton-btn"></div>
+                    </div>
+                </div>
+            `).join('');
+            await fetchAlerts();
+            applyFiltersAndRender();
+        });
+    };
+
+    // ── 8. Parallel kick-off ──────────────────────────────────────────────
+    await Promise.all([fetchAlerts(), getLocationAsync()]);
+    applyFiltersAndRender();
+    bindEvents();
 }
+// === ALERTS_PAGE_END ===
 
 // Also add/update the viewAlertOnMap function in main.js or ensure it's global:
 window.viewAlertOnMap = function(lat, lng) {

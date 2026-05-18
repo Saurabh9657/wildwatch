@@ -1,6 +1,6 @@
 /**
  * Admin Module
- * Handles admin dashboard, analytics, zone management, and system logs
+ * Handles admin dashboard, analytics, and zone management
  */
 
 let adminMap = null;
@@ -9,8 +9,6 @@ let currentZoneDrawing = [];
 let currentDrawMode = 'polygon';
 let zoneDrawLayer = null;
 let adminChart = null;
-let logsPage = 1;
-const logsPageSize = 20;
 let circleCenter = null; // For circle drawing
 
 // Current active admin tab
@@ -849,7 +847,7 @@ async function loadOfficerManagement() {
  */
 async function loadOfficersList() {
     try {
-        const response = await apiRequest('/admin/officers');
+        const response = await apiRequest('/admin/officers', {}, false); // always skip cache
         const officers = response.officers || [];
         
         const container = document.getElementById('officersList');
@@ -871,10 +869,13 @@ async function loadOfficersList() {
                             <td>${officer.name}</td>
                             <td>${officer.email}</td>
                             <td>${officer.district || '-'}</td>
-                            <td><span class="alert-badge low">Active</span></td>
+                            <td><span class="alert-badge ${officer.isActive ? 'low' : 'high'}">${officer.isActive ? 'Active' : 'Disabled'}</span></td>
                             <td>
-                                <button class="btn btn-danger btn-sm" onclick="disableOfficer('${officer._id}')">
+                                <button class="btn btn-warning btn-sm" onclick="disableOfficer('${officer._id}')" title="Disable">
                                     <i class="fas fa-ban"></i>
+                                </button>
+                                <button class="btn btn-danger btn-sm" onclick="deleteOfficer('${officer._id}')" title="Delete" style="margin-left: 0.5rem;">
+                                    <i class="fas fa-trash"></i>
                                 </button>
                             </td>
                         </tr>
@@ -885,6 +886,52 @@ async function loadOfficersList() {
         
     } catch (error) {
         console.error('Error loading officers:', error);
+    }
+}
+
+/**
+ * Delete officer account permanently
+ */
+async function deleteOfficer(officerId) {
+    if (!confirm('Are you sure you want to permanently delete this officer account? This action cannot be undone.')) {
+        return;
+    }
+
+    try {
+        await apiRequest(`/admin/officers/${officerId}`, {
+            method: 'DELETE'
+        });
+
+        // Clear cached officers list so the reload fetches fresh data
+        if (typeof clearCache === 'function') clearCache('/admin/officers');
+
+        showToast('Officer account deleted successfully', 'success');
+        await loadOfficersList();
+
+    } catch (error) {
+        console.error('Error deleting officer:', error);
+        showToast(error.message || 'Failed to delete officer', 'error');
+    }
+}
+
+/**
+ * Toggle officer active/disabled status
+ */
+async function disableOfficer(officerId) {
+    try {
+        const response = await apiRequest(`/admin/officers/${officerId}/toggle-status`, {
+            method: 'PATCH'
+        });
+
+        // Clear cached officers list so the reload fetches fresh data
+        if (typeof clearCache === 'function') clearCache('/admin/officers');
+
+        showToast(response.message || 'Officer status updated', 'success');
+        await loadOfficersList();
+
+    } catch (error) {
+        console.error('Error toggling officer status:', error);
+        showToast(error.message || 'Failed to update officer status', 'error');
     }
 }
 
@@ -1017,114 +1064,6 @@ async function exportReports() {
 }
 
 /**
- * Load system logs
- */
-async function loadSystemLogs() {
-    logsPage = 1;
-    const mainContent = document.getElementById('mainContent');
-    
-    mainContent.innerHTML = `
-        <div class="container">
-            <div class="card">
-                <h3><i class="fas fa-history"></i> System Logs</h3>
-                <p style="color: var(--gray); margin-bottom: 1rem;">Security monitoring, audit trail, and access log</p>
-                
-                <div class="stats-grid" style="grid-template-columns: repeat(5, 1fr); margin-bottom: 1.5rem;">
-                    <div class="stat-card" style="background: var(--primary);">
-                        <h3>3,241</h3>
-                        <p>Events Today</p>
-                    </div>
-                    <div class="stat-card" style="background: var(--danger);">
-                        <h3>4</h3>
-                        <p>Failed Logins</p>
-                    </div>
-                    <div class="stat-card" style="background: var(--info);">
-                        <h3>12,840</h3>
-                        <p>API Requests</p>
-                    </div>
-                    <div class="stat-card" style="background: var(--success);">
-                        <h3>17</h3>
-                        <p>Admin Actions</p>
-                    </div>
-                    <div class="stat-card" style="background: var(--warning);">
-                        <h3>2</h3>
-                        <p>Blocked Requests</p>
-                    </div>
-                </div>
-                
-                <div id="logsTable">
-                    <div class="loading-container"><i class="fas fa-spinner fa-spin"></i> Loading logs...</div>
-                </div>
-            </div>
-        </div>
-    `;
-    
-    await loadLogsTable();
-}
-
-/**
- * Load logs table
- */
-async function loadLogsTable() {
-    const container = document.getElementById('logsTable');
-    if (!container) return;
-    
-    // Sample logs data
-    const sampleLogs = [
-        { timestamp: '2024-06-15 14:23:10', user: 'Ramesh Kumar', role: 'Citizen', action: 'SUBMIT_REPORT', resource: 'Report #2847', ip: '182.64.12.45', status: 'SUCCESS' },
-        { timestamp: '2024-06-15 14:21:05', user: 'R. Singh', role: 'Officer', action: 'VERIFY_REPORT', resource: 'Report #2846', ip: '10.1.0.45', status: 'SUCCESS' },
-        { timestamp: '2024-06-15 14:18:32', user: 'Admin Patel', role: 'Admin', action: 'CREATE_ZONE', resource: 'Zone #Z-34', ip: '10.1.0.1', status: 'SUCCESS' },
-        { timestamp: '2024-06-15 14:15:44', user: 'Unknown', role: 'Citizen', action: 'UPLOAD_PHOTO', resource: 'Report #2845', ip: '49.36.201.8', status: 'SUCCESS' },
-        { timestamp: '2024-06-15 14:10:12', user: 'Priya Devi', role: 'Citizen', action: 'ISSUE_ALERT', resource: 'Alert #A-241', ip: '10.1.0.62', status: 'SUCCESS' },
-        { timestamp: '2024-06-15 14:08:56', user: 'P. Rao', role: 'Officer', action: 'EXPORT_DATA', resource: 'Reports June CSV', ip: '10.1.0.1', status: 'SUCCESS' },
-        { timestamp: '2024-06-15 14:04:23', user: 'Admin Patel', role: 'Admin', action: 'LOGIN_FAILED', resource: 'Auth endpoint', ip: '10.1.0.1', status: 'FAILED' },
-    ];
-    
-    container.innerHTML = `
-        <table class="data-table">
-            <thead>
-                <tr>
-                    <th>Timestamp</th>
-                    <th>User</th>
-                    <th>Role</th>
-                    <th>Action</th>
-                    <th>Resource</th>
-                    <th>IP Address</th>
-                    <th>Status</th>
-                </tr>
-            </thead>
-            <tbody>
-                ${sampleLogs.map(log => `
-                    <tr>
-                        <td>${log.timestamp}</td>
-                        <td>${log.user}</td>
-                        <td>${log.role}</td>
-                        <td>${log.action}</td>
-                        <td>${log.resource}</td>
-                        <td>${log.ip}</td>
-                        <td><span class="alert-badge ${log.status === 'SUCCESS' ? 'low' : 'high'}">${log.status}</span></td>
-                    </tr>
-                `).join('')}
-            </tbody>
-        </table>
-        <div style="margin-top: 1rem; text-align: center;">
-            <button class="btn btn-outline btn-sm" onclick="changeLogsPage(-1)" disabled>← Prev</button>
-            <span style="margin: 0 1rem;">Page 1 of 50</span>
-            <button class="btn btn-outline btn-sm" onclick="changeLogsPage(1)">Next →</button>
-        </div>
-    `;
-}
-
-/**
- * Change logs page
- */
-async function changeLogsPage(step) {
-    logsPage += step;
-    if (logsPage < 1) logsPage = 1;
-    await loadLogsTable();
-}
-
-/**
  * Get date after days
  */
 function getDateAfterDays(days) {
@@ -1173,6 +1112,5 @@ async function disableOfficer(officerId) {
 // 1. POST /api/zones - With geometry support for circle, pin, path
 // 2. DELETE /api/zones/:id - For deleting zones
 // 3. PUT /api/users/:id/disable - For disabling officer accounts
-// 4. GET /api/logs - For system logs with pagination
-// 5. GET /api/reports/export - For CSV export
-// 6. POST /api/alerts/broadcast - For mass alerts to specific zones
+// 4. GET /api/reports/export - For CSV export
+// 5. POST /api/alerts/broadcast - For mass alerts to specific zones

@@ -23,7 +23,7 @@ const reportSchema = new mongoose.Schema({
   },
   riskLevel: {
     type: String,
-    enum: ['Low', 'Medium', 'High'],
+    enum: ['Low', 'Medium', 'High', 'Critical'],
     required: true
   },
   description: {

@@ -54,7 +54,7 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // Protected pages list
     const protectedPages = ['map', 'alerts', 'dashboard', 'report', 'my-reports', 
-                            'officer-dashboard', 'admin-dashboard', 'logs'];
+                            'officer-dashboard', 'admin-dashboard'];
     
     // If not logged in and trying to access protected page, go to home
     if (protectedPages.includes(savedPage) && !authToken) {
@@ -131,7 +131,6 @@ function renderNavigation() {
             links.push({ id: 'officer-dashboard', label: 'Officer Dashboard', icon: 'fa-shield-alt' });
         } else if (currentUser.role === 'admin') {
             links.push({ id: 'admin-dashboard', label: 'Admin Dashboard', icon: 'fa-crown' });
-            links.push({ id: 'logs', label: 'System Logs', icon: 'fa-history' });
         }
         
         // Build navigation HTML
@@ -186,13 +185,17 @@ async function loadPage(page) {
     const mainContent = document.getElementById('mainContent');
     
     if (!mainContent) return;
+
+    // Fade out
+    mainContent.classList.add('fading');
+    await new Promise(r => setTimeout(r, 120));
     
     // Update active nav link
     renderNavigation();
     
     // Check authentication for protected pages
     const protectedPages = ['map', 'alerts', 'dashboard', 'report', 'my-reports', 
-                            'officer-dashboard', 'admin-dashboard', 'logs'];
+                            'officer-dashboard', 'admin-dashboard'];
     
     if (protectedPages.includes(page) && !authToken) {
         showToast('Please login to access this page', 'warning');
@@ -256,16 +259,16 @@ async function loadPage(page) {
                 loadPage('home');
             }
             break;
-        case 'logs':
-            if (currentUser?.role === 'admin') {
-                await loadSystemLogs();
-            } else {
-                loadPage('home');
-            }
-            break;
         default:
             await loadHomePage();
     }
+
+    // Show footer only on home page
+    const footer = document.getElementById('siteFooter');
+    if (footer) footer.style.display = (page === 'home') ? 'block' : 'none';
+
+    // Fade back in
+    mainContent.classList.remove('fading');
 }
 
 /**
@@ -326,7 +329,8 @@ async function apiRequest(endpoint, options = {}, useCache = true) {
         useCache = false;
     }
 
-    const cacheKey = `${method}:${endpoint}`;
+    const authKey = headers.Authorization || '';
+    const cacheKey = `${method}:${endpoint}:${authKey}`;
     
     // Check cache for GET requests
     if (method === 'GET' && useCache && typeof CacheManager !== 'undefined' && CacheManager) {
@@ -341,10 +345,25 @@ async function apiRequest(endpoint, options = {}, useCache = true) {
     try {
         const response = await fetch(url, {
             ...options,
-            headers
+            headers,
+            cache: options.cache || 'no-store'
         });
         
-        const data = await response.json();
+        // Safely parse JSON — server might return HTML on unexpected errors
+        let data;
+        const contentType = response.headers.get('content-type') || '';
+        if (contentType.includes('application/json')) {
+            data = await response.json();
+        } else {
+            // Non-JSON body (HTML error page, empty response, etc.)
+            const text = await response.text();
+            if (!response.ok) {
+                // Strip HTML tags to surface the actual Express error message
+                const cleaned = text.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+                throw new Error(cleaned.substring(0, 200) || `Server error ${response.status}: ${response.statusText}`);
+            }
+            data = {};
+        }
         
         if (!response.ok) {
             throw new Error(data.error || `Request failed: ${response.status}`);
@@ -516,23 +535,23 @@ async function loadHomePage() {
     } catch (e) {
         console.log('Zones not available yet');
     }
-    
+
     mainContent.innerHTML = `
         <div class="container">
             <div class="hero">
-                <h2>Wildlife Incident Monitoring & Reporting System</h2>
+                <h2>Wildlife Incident Monitoring &amp; Reporting System</h2>
                 <p>A real-time platform for citizens and forest officers to report, monitor, and respond to wildlife encounters — protecting both communities and wildlife.</p>
                 <div class="hero-buttons">
                     ${!authToken ? `
-                        <button class="btn btn-primary" onclick="loadPage('register')">
+                        <button class="btn btn-secondary" onclick="loadPage('register')">
                             <i class="fas fa-user-plus"></i> Report a Sighting
                         </button>
                     ` : `
-                        <button class="btn btn-primary" onclick="loadPage('report')">
+                        <button class="btn btn-secondary" onclick="loadPage('report')">
                             <i class="fas fa-camera"></i> Report a Sighting
                         </button>
                     `}
-                    <button class="btn btn-secondary" onclick="loadPage('map')">
+                    <button class="btn btn-outline" style="color:white;border-color:rgba(255,255,255,0.55);backdrop-filter:blur(4px);background:rgba(255,255,255,0.12);" onclick="loadPage('map')">
                         <i class="fas fa-map"></i> View Live Map
                     </button>
                 </div>
@@ -541,19 +560,19 @@ async function loadHomePage() {
             <div class="stats-grid">
                 <div class="stat-card">
                     <h3>${stats.totalReports}</h3>
-                    <p>REPORTS FILED</p>
+                    <p>Reports Filed</p>
                 </div>
                 <div class="stat-card">
                     <h3>${stats.activeZones}</h3>
-                    <p>ACTIVE ZONES</p>
+                    <p>Active Zones</p>
                 </div>
                 <div class="stat-card">
                     <h3>12</h3>
-                    <p>OFFICER UNITS</p>
+                    <p>Officer Units</p>
                 </div>
                 <div class="stat-card">
                     <h3>${stats.verifiedRate}%</h3>
-                    <p>VERIFIED REPORTS</p>
+                    <p>Verified Reports</p>
                 </div>
             </div>
             
@@ -566,7 +585,7 @@ async function loadHomePage() {
                 <div class="feature-card">
                     <i class="fas fa-tree"></i>
                     <h3>Wildlife Protection</h3>
-                    <p>Movement data helps identify migration corridors, enabling authorities to protect habitats and reduce habitat encroachment proactively.</p>
+                    <p>Movement data helps identify migration corridors, enabling authorities to protect habitats and reduce encroachment proactively.</p>
                 </div>
                 <div class="feature-card">
                     <i class="fas fa-clock"></i>
@@ -579,12 +598,12 @@ async function loadHomePage() {
                     <p>Aggregated reports reveal seasonal movement patterns, enabling proactive zone mapping and resource deployment before incidents occur.</p>
                 </div>
             </div>
-            
-            <div class="features-grid" style="margin-top: 0;">
+
+            <div class="features-grid" style="margin-top:0">
                 <div class="feature-card">
                     <i class="fas fa-camera"></i>
                     <h3>Report Sightings</h3>
-                    <p>Submit a sighting in under 20 seconds. Just select the animal, drop a pin on the map, and tap send. Photos are optional but encouraged.</p>
+                    <p>Submit a sighting in under 20 seconds. Just select the animal, drop a pin on the map, and tap send. Photos optional but encouraged.</p>
                 </div>
                 <div class="feature-card">
                     <i class="fas fa-map-marked-alt"></i>
@@ -594,18 +613,7 @@ async function loadHomePage() {
                 <div class="feature-card">
                     <i class="fas fa-bell"></i>
                     <h3>Receive Alerts</h3>
-                    <p>Push notifications when wildlife is reported near you. Customize your alert radius from 1-50km in profile settings.</p>
-                </div>
-            </div>
-            
-            <div class="text-center" style="margin-top: 2rem; padding: 1rem; border-top: 1px solid rgba(255,255,255,0.2);">
-                <p style="color: rgba(255,255,255,0.7);">WildWatch — Forest Department of India</p>
-                <div style="display: flex; justify-content: center; gap: 1rem; margin-top: 0.5rem;">
-                    <a href="#" style="color: rgba(255,255,255,0.7);">About</a>
-                    <a href="#" style="color: rgba(255,255,255,0.7);">Contact</a>
-                    <a href="#" style="color: rgba(255,255,255,0.7);">Guidelines</a>
-                    <a href="#" style="color: rgba(255,255,255,0.7);">Privacy</a>
-                    <a href="#" style="color: rgba(255,255,255,0.7);">API Docs</a>
+                    <p>Push notifications when wildlife is reported near you. Customize your alert radius from 1–50 km in profile settings.</p>
                 </div>
             </div>
         </div>
@@ -688,18 +696,15 @@ async function refreshLiveMapData() {
         if (animalFilter) reportsUrl += `&animalType=${encodeURIComponent(animalFilter)}`;
         if (riskFilter) reportsUrl += `&riskLevel=${riskFilter}`;
         
-        // Fetch ALL zones
-        const authToken = localStorage.getItem('authToken') || localStorage.getItem('token');
-        const zonesResponse = await fetch('/api/zones', {
-            headers: { 'Authorization': `Bearer ${authToken}` }
-        });
-        const zonesData = await zonesResponse.json();
-        const zones = zonesData.zones || [];
+        // Fetch ALL zones with the app cache/authorization helper
+        const zonesResponse = await apiRequest('/zones', {}, false);
+        const zones = zonesResponse.zones || [];
         
         const reportsResponse = await apiRequest(reportsUrl, {}, true);
         const reports = reportsResponse.reports || [];
         
         console.log('Rendering:', reports.length, 'reports,', zones.length, 'zones');
+        console.log('Zone list for user map:', zones.map(z => ({ id: z._id, name: z.name, createdAt: z.createdAt, createdByRole: z.createdByRole })));
         
         const points = [];
         const animalTypes = new Set();

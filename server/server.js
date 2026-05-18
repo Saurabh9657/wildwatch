@@ -39,11 +39,19 @@ app.options('*', cors(corsOptions));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
+// Disable caching for API responses so clients always receive fresh dynamic data
+app.use('/api', (req, res, next) => {
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
+  next();
+});
+
 // Serve uploaded images
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+app.use('/uploads', express.static(path.join(__dirname, 'uploads'), { maxAge: 0, etag: false }));
 
 // Serve static files from client directory
-app.use(express.static(path.join(__dirname, '../client')));
+app.use(express.static(path.join(__dirname, '../client'), { maxAge: 0, etag: false }));
 
 // Import User model for admin creation
 const User = require('./models/User');
@@ -72,22 +80,27 @@ async function createAdminIfNotExists() {
     const adminEmail = process.env.ADMIN_EMAIL || 'admin@gmail.com';
     const adminPassword = process.env.ADMIN_PASSWORD || 'AdminPass@123';
     
-    // Check if admin already exists
+    // Find existing admin by role
     const existingAdmin = await User.findOne({ role: 'admin' });
     
     if (existingAdmin) {
+      if (existingAdmin.email === adminEmail) {
+        const isMatch = await existingAdmin.comparePassword(adminPassword);
+        if (!isMatch) {
+          existingAdmin.password = adminPassword;
+          await existingAdmin.save();
+          console.log('✅ Admin password updated from env configuration');
+        }
+      }
       console.log('✅ Admin account already exists');
       return;
     }
     
-    // Hash admin password
-    const hashedPassword = await bcrypt.hash(adminPassword, 10);
-    
-    // Create admin user
+    // Create admin user using plain password so pre-save hashing runs once
     const admin = await User.create({
       name: 'System Administrator',
       email: adminEmail,
-      password: hashedPassword,
+      password: adminPassword,
       role: 'admin'
     });
     
